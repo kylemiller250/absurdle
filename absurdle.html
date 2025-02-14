@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Absurdle</title>
+  <!-- Confetti library -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #121213;
+      color: #ffffff;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    /* Guess controls (centered above keyboard) */
+    #guessControls {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    #guessInput {
+      font-size: 18px;
+      padding: 5px;
+      text-transform: uppercase;
+      width: 150px;
+      text-align: center;
+    }
+    button {
+      font-size: 18px;
+      padding: 5px 10px;
+      margin: 0 5px;
+      cursor: pointer;
+    }
+    /* On-screen keyboard (centered) */
+    #keyboardContainer {
+      text-align: center;
+      margin: 10px auto;
+    }
+    #keyboard {
+      display: inline-block;
+      text-align: center;
+    }
+    .keyboard-row {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 5px;
+    }
+    .key {
+      margin: 2px;
+      padding: 10px 15px;
+      background: #555;
+      color: #fff;
+      border: 1px solid #333;
+      border-radius: 5px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .key.used {
+      background: #6aaa64;
+    }
+    /* Boards container using flex so they wrap */
+    #boardsContainer {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      /* gap will be updated dynamically */
+      gap: 10px;
+    }
+    /* Each board scales via the CSS zoom property */
+    .board {
+      background-color: #3a3a3c;
+      padding: 5px;
+      border-radius: 5px;
+      transition: background-color 0.5s ease;
+      width: 150px;
+      zoom: 1;
+    }
+    .board.solved {
+      background-color: #6aaa64;
+    }
+    .board-header {
+      font-size: 12px;
+      color: #888;
+      text-align: center;
+      margin-bottom: 5px;
+    }
+    /* When solved, header text becomes white */
+    .board.solved .board-header {
+      color: #fff;
+    }
+    .row {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 3px;
+    }
+    .cell {
+      width: 28px;
+      height: 28px;
+      margin: 1px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      text-transform: uppercase;
+      border: 1px solid #444;
+      border-radius: 4px;
+    }
+    .cell.correct {
+      background-color: #6aaa64;
+      border-color: #6aaa64;
+      color: white;
+    }
+    .cell.present {
+      background-color: #c9b458;
+      border-color: #c9b458;
+      color: white;
+    }
+    .cell.absent {
+      background-color: #787c7e;
+      border-color: #787c7e;
+      color: white;
+    }
+    /* In solved boards, force cells to keep a white outline */
+    .board.solved .cell {
+      border: 1px solid #fff;
+    }
+    #loading {
+      text-align: center;
+      margin-top: 20px;
+    }
+    /* Popup styling (for notifications) */
+    #popup {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: rgba(50,50,50,0.9);
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: 5px;
+      opacity: 0;
+      transition: opacity 0.5s ease;
+      pointer-events: none;
+      z-index: 100;
+    }
+    /* Zoom buttons: fixed at bottom right with updated background */
+    #zoomButtons {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      display: flex;
+      gap: 10px;
+      z-index: 101;
+    }
+    #zoomButtons button {
+      font-size: 24px;
+      padding: 5px 10px;
+      background: rgb(220,220,220);
+      color: #000;
+      border: 1px solid #888;
+      border-radius: 5px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Absurdle</h1>
+  <div id="guessControls">
+    <input type="text" id="guessInput" maxlength="5" placeholder="Enter guess">
+  </div>
+  <div id="keyboardContainer">
+    <div id="keyboard"></div>
+  </div>
+  <div id="boardsContainer"></div>
+  <div id="loading">Loading word lists...</div>
+  <div id="popup"></div>
+  <div id="zoomButtons">
+    <button id="zoomOut">➖</button>
+    <button id="zoomIn">➕</button>
+  </div>
+
+  <script>
+    // Global variables
+    let boards = [];
+    let possibleAnswers = [];
+    let validWords = new Set();
+    let usedLetters = new Set();
+    let submittedGuesses = new Set();
+
+    const answersURL = 'https://gist.githubusercontent.com/cfreshman/a03ef2cba789d8cf00c08f767e0fad7b/raw/45c977427419a1e0edee8fd395af1e0a4966273b/wordle-answers-alphabetical.txt';
+    const validWordsURL = 'https://gist.githubusercontent.com/dracos/dd0668f281e685bad51479e5acaadb93/raw/6bfa15d263d6d5b63840a8e5b64e04b382fdb079/valid-wordle-words.txt';
+
+    const boardsContainer = document.getElementById('boardsContainer');
+    const guessInput = document.getElementById('guessInput');
+    const zoomInBtn = document.getElementById('zoomIn');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const loadingEl = document.getElementById('loading');
+    const keyboardContainer = document.getElementById('keyboard');
+    const popupEl = document.getElementById('popup');
+
+    let zoomScale = 1; // initial zoom level (1 = 100%)
+    const baseGap = 10; // base gap when zoomScale = 1
+
+    // Display a popup notification that fades away.
+    function showPopup(message) {
+      popupEl.textContent = message;
+      popupEl.style.opacity = 1;
+      setTimeout(() => {
+        popupEl.style.opacity = 0;
+      }, 2000);
+    }
+
+    // Create a board for a given answer.
+    function createBoard(answer) {
+      const boardObj = {
+        answer: answer,
+        guesses: [],
+        solved: false,
+        element: null
+      };
+
+      const boardEl = document.createElement('div');
+      boardEl.classList.add('board');
+
+      const header = document.createElement('div');
+      header.classList.add('board-header');
+      header.textContent = "?????";
+      boardEl.appendChild(header);
+
+      boardObj.element = boardEl;
+      boardsContainer.appendChild(boardEl);
+      return boardObj;
+    }
+
+    // Compute Wordle-style feedback.
+    function getFeedback(guess, answer) {
+      const feedback = Array(5).fill("absent");
+      const answerArr = answer.split('');
+      const guessArr = guess.split('');
+      const taken = Array(5).fill(false);
+
+      for (let i = 0; i < 5; i++) {
+        if (guessArr[i] === answerArr[i]) {
+          feedback[i] = "correct";
+          taken[i] = true;
+        }
+      }
+      for (let i = 0; i < 5; i++) {
+        if (feedback[i] === "correct") continue;
+        const letter = guessArr[i];
+        for (let j = 0; j < 5; j++) {
+          if (!taken[j] && answerArr[j] === letter) {
+            feedback[i] = "present";
+            taken[j] = true;
+            break;
+          }
+        }
+      }
+      return feedback;
+    }
+
+    // Append a guess row to a board.
+    function addGuessRow(boardObj, guess, feedback) {
+      const row = document.createElement('div');
+      row.classList.add('row');
+      for (let i = 0; i < 5; i++) {
+        const cell = document.createElement('div');
+        cell.classList.add('cell');
+        cell.textContent = guess[i];
+        cell.classList.add(feedback[i]);
+        row.appendChild(cell);
+      }
+      boardObj.element.appendChild(row);
+    }
+
+    // Animate moving a board to the top.
+    function animateMoveToTop(boardEl) {
+      const initialRect = boardEl.getBoundingClientRect();
+      boardsContainer.insertBefore(boardEl, boardsContainer.firstChild);
+      const finalRect = boardEl.getBoundingClientRect();
+      const dx = initialRect.left - finalRect.left;
+      const dy = initialRect.top - finalRect.top;
+      boardEl.style.transition = 'none';
+      boardEl.style.transform = `translate(${dx}px, ${dy}px)`;
+      requestAnimationFrame(() => {
+        boardEl.style.transition = 'transform 0.5s ease';
+        boardEl.style.transform = 'translate(0, 0)';
+      });
+    }
+
+    // Fire a bigger, more forceful confetti burst from near the top.
+    function triggerConfettiAtTop() {
+      confetti({
+        particleCount: 100,
+        spread: 100,
+        startVelocity: 30,
+        origin: { x: 0.5, y: 0.1 }
+      });
+    }
+
+    // Update on-screen keyboard keys to mark used letters.
+    function updateKeyboard() {
+      const keys = document.querySelectorAll('.key');
+      keys.forEach(key => {
+        const letter = key.textContent;
+        if (usedLetters.has(letter)) {
+          key.classList.add('used');
+        }
+      });
+    }
+
+    // Process a submitted guess.
+    function submitGuess() {
+      const guess = guessInput.value.trim().toUpperCase();
+
+      // Validate input.
+      if (guess.length !== 5 || !/^[A-Z]{5}$/.test(guess)) {
+        showPopup("Please enter a valid 5-letter word.");
+        return;
+      }
+      if (!validWords.has(guess)) {
+        showPopup("Not a valid word.");
+        return;
+      }
+      if (submittedGuesses.has(guess)) {
+        showPopup("You've already tried that word!");
+        return;
+      }
+
+      submittedGuesses.add(guess);
+      for (let letter of guess) {
+        usedLetters.add(letter);
+      }
+      updateKeyboard();
+
+      boards.forEach(boardObj => {
+        if (boardObj.solved) return;
+        const feedback = getFeedback(guess, boardObj.answer);
+        addGuessRow(boardObj, guess, feedback);
+        boardObj.guesses.push({ guess, feedback });
+        if (guess === boardObj.answer) {
+          boardObj.solved = true;
+          const header = boardObj.element.querySelector('.board-header');
+          header.textContent = boardObj.answer;
+          boardObj.element.classList.add('solved');
+          // Fix the height of the solved board using scrollHeight.
+          boardObj.element.style.height = boardObj.element.scrollHeight + "px";
+          triggerConfettiAtTop();
+          animateMoveToTop(boardObj.element);
+        }
+      });
+      guessInput.value = "";
+    }
+
+    guessInput.addEventListener('keyup', function(event) {
+      if (event.key === "Enter") {
+        submitGuess();
+      }
+    });
+
+    // Zoom functionality: update each board's zoom property using our stored boards array.
+    // Also update the container gap to be proportional to the board size.
+    function updateZoom() {
+      boards.forEach(boardObj => {
+        boardObj.element.style.zoom = zoomScale;
+      });
+      // Set gap proportional to board size: gap = baseGap * zoomScale.
+      boardsContainer.style.gap = (baseGap * zoomScale) + "px";
+    }
+    zoomInBtn.addEventListener('click', () => {
+      zoomScale *= 1.3;
+      updateZoom();
+    });
+    zoomOutBtn.addEventListener('click', () => {
+      zoomScale /= 1.3;
+      updateZoom();
+    });
+
+    // Build the on-screen keyboard.
+    function buildKeyboard() {
+      keyboardContainer.innerHTML = "";
+      
+      // Row 1: QWERTYUIOP
+      let rowDiv = document.createElement("div");
+      rowDiv.classList.add("keyboard-row");
+      "QWERTYUIOP".split("").forEach(letter => {
+        const keyBtn = document.createElement("button");
+        keyBtn.classList.add("key");
+        keyBtn.textContent = letter;
+        keyBtn.addEventListener("click", () => {
+          if (guessInput.value.length < 5) {
+            guessInput.value += letter;
+          }
+        });
+        rowDiv.appendChild(keyBtn);
+      });
+      keyboardContainer.appendChild(rowDiv);
+      
+      // Row 2: ASDFGHJKL
+      rowDiv = document.createElement("div");
+      rowDiv.classList.add("keyboard-row");
+      "ASDFGHJKL".split("").forEach(letter => {
+        const keyBtn = document.createElement("button");
+        keyBtn.classList.add("key");
+        keyBtn.textContent = letter;
+        keyBtn.addEventListener("click", () => {
+          if (guessInput.value.length < 5) {
+            guessInput.value += letter;
+          }
+        });
+        rowDiv.appendChild(keyBtn);
+      });
+      keyboardContainer.appendChild(rowDiv);
+      
+      // Row 3: Enter key, then ZXCVBNM, then Delete key.
+      rowDiv = document.createElement("div");
+      rowDiv.classList.add("keyboard-row");
+      
+      // Enter key to the left.
+      const enterKey = document.createElement("button");
+      enterKey.classList.add("key");
+      enterKey.textContent = "Enter";
+      enterKey.addEventListener("click", submitGuess);
+      rowDiv.appendChild(enterKey);
+      
+      // Letters ZXCVBNM.
+      "ZXCVBNM".split("").forEach(letter => {
+        const keyBtn = document.createElement("button");
+        keyBtn.classList.add("key");
+        keyBtn.textContent = letter;
+        keyBtn.addEventListener("click", () => {
+          if (guessInput.value.length < 5) {
+            guessInput.value += letter;
+          }
+        });
+        rowDiv.appendChild(keyBtn);
+      });
+      
+      // Delete key to the right with Unicode U+232B.
+      const deleteKey = document.createElement("button");
+      deleteKey.classList.add("key");
+      deleteKey.textContent = "\u232B"; // Unicode for 'Erase To The Left'
+      deleteKey.addEventListener("click", () => {
+        guessInput.value = guessInput.value.slice(0, -1);
+      });
+      rowDiv.appendChild(deleteKey);
+      
+      keyboardContainer.appendChild(rowDiv);
+    }
+
+    buildKeyboard();
+
+    // Load the word lists concurrently.
+    Promise.all([
+      fetch(answersURL).then(response => response.text()),
+      fetch(validWordsURL).then(response => response.text())
+    ]).then(([answersText, validWordsText]) => {
+      possibleAnswers = answersText.split(/\r?\n/).filter(line => line.trim() !== "").map(word => word.toUpperCase());
+      validWords = new Set(validWordsText.split(/\r?\n/).filter(line => line.trim() !== "").map(word => word.toUpperCase()));
+      possibleAnswers.forEach(answer => {
+        boards.push(createBoard(answer));
+      });
+      loadingEl.style.display = "none";
+    }).catch(err => {
+      loadingEl.textContent = "Error loading word lists.";
+      console.error("Failed to load word lists:", err);
+    });
+  </script>
+</body>
+</html>
